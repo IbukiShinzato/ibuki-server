@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{File, remove_file};
 use std::io::ErrorKind;
 use std::io::{Read, Write, stdout};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -15,10 +15,12 @@ const BUFSIZE: usize = 4096;
 
 const GET_PREFIX: &str = "GET<";
 const PUT_PREFIX: &str = "PUT<";
+const DEL_PREFIX: &str = "DEL<";
 
 enum Protocol {
     Get,
     Put,
+    Del,
     Error,
 }
 
@@ -109,6 +111,38 @@ fn save_file(stream: &mut TcpStream, filename: &str, content: &str) -> Result<()
     Ok(())
 }
 
+fn delete_file(stream: &mut TcpStream, filename: &str) -> Result<(), Error> {
+    if !is_valid_filename(filename) {
+        stream.write_all(b"INVALID PATH NAME\n")?;
+        return Ok(());
+    }
+
+    let Some(home) = env::home_dir() else {
+        stream.write_all(b"SERVER ERROR\n")?;
+        return Ok(());
+    };
+
+    let path = home.join(filename);
+
+    match remove_file(path) {
+        Ok(()) => (),
+        Err(error) => {
+            let response: &[u8] = match error.kind() {
+                ErrorKind::PermissionDenied => b"NOT PERMISSION\n",
+                ErrorKind::NotFound => b"NOT FOUND\n",
+                _ => b"FILE ERROR\n",
+            };
+
+            stream.write_all(response)?;
+            return Ok(());
+        }
+    };
+
+    writeln!(stream, "DEL: {filename} deleted")?;
+
+    Ok(())
+}
+
 fn parse_angle_brackets<'a>(msg: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
     let rest = msg.strip_prefix(prefix)?;
     rest.split_once(">")
@@ -121,6 +155,10 @@ fn parse_protocol(msg: &str) -> Protocol {
 
     if msg.starts_with(PUT_PREFIX) {
         return Protocol::Put;
+    }
+
+    if msg.starts_with(DEL_PREFIX) {
+        return Protocol::Del;
     }
 
     Protocol::Error
@@ -149,7 +187,16 @@ fn resp_msg(stream: &mut TcpStream, msg: &str) -> Result<(), Error> {
                 stream.write_all(b"PROTOCOL ERROR\n")?;
             }
         }
-        _ => {
+        Protocol::Del => {
+            if let Some((filename, rest)) = parse_angle_brackets(msg, DEL_PREFIX)
+                && rest.is_empty()
+            {
+                delete_file(stream, filename)?;
+            } else {
+                stream.write_all(b"PROTOCOL ERROR\n")?;
+            }
+        }
+        Protocol::Error => {
             stream.write_all(b"PROTOCOL ERROR\n")?;
             return Ok(());
         }
