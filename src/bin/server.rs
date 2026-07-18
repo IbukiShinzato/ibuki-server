@@ -1,10 +1,9 @@
-use std::fs::{File, remove_file};
-use std::io::ErrorKind;
-use std::io::{Read, Write, stdout};
+use std::env;
+use std::fs::{self, File, remove_file};
+use std::io::{ErrorKind, Read, Write, stdout};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Component, Path};
 use std::thread;
-use std::{env, fs};
 
 pub type Error = Box<dyn std::error::Error>;
 
@@ -16,11 +15,13 @@ const BUFSIZE: usize = 4096;
 const GET_PREFIX: &str = "GET<";
 const PUT_PREFIX: &str = "PUT<";
 const DEL_PREFIX: &str = "DEL<";
+const LS_PREFIX: &str = "LS";
 
 enum Protocol {
     Get,
     Put,
     Del,
+    Ls,
     Error,
 }
 
@@ -143,6 +144,33 @@ fn delete_file(stream: &mut TcpStream, filename: &str) -> Result<(), Error> {
     Ok(())
 }
 
+fn list_files(stream: &mut TcpStream) -> Result<(), Error> {
+    let Some(home) = env::home_dir() else {
+        stream.write_all(b"SERVER ERROR\n")?;
+        return Ok(());
+    };
+
+    let entries = fs::read_dir(home)?
+        .map(|entry| {
+            let entry = entry?;
+            Ok(entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect::<Result<Vec<String>, Error>>()?;
+
+    let entries: Vec<String> = entries
+        .into_iter()
+        .filter(|name| !name.starts_with("."))
+        .collect();
+
+    let body = entries.join("\n") + "\n";
+    let header = format!("LIST({}): ", body.len());
+
+    stream.write_all(header.as_bytes())?;
+    stream.write_all(body.as_bytes())?;
+
+    Ok(())
+}
+
 fn parse_angle_brackets<'a>(msg: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
     let rest = msg.strip_prefix(prefix)?;
     rest.split_once(">")
@@ -159,6 +187,10 @@ fn parse_protocol(msg: &str) -> Protocol {
 
     if msg.starts_with(DEL_PREFIX) {
         return Protocol::Del;
+    }
+
+    if msg == LS_PREFIX {
+        return Protocol::Ls;
     }
 
     Protocol::Error
@@ -195,6 +227,9 @@ fn resp_msg(stream: &mut TcpStream, msg: &str) -> Result<(), Error> {
             } else {
                 stream.write_all(b"PROTOCOL ERROR\n")?;
             }
+        }
+        Protocol::Ls => {
+            list_files(stream)?;
         }
         Protocol::Error => {
             stream.write_all(b"PROTOCOL ERROR\n")?;
