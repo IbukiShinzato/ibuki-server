@@ -3,6 +3,7 @@ use std::fs::{self, File, remove_file};
 use std::io::{ErrorKind, Read, Write, stdout};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Component, Path};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 pub type Error = Box<dyn std::error::Error>;
@@ -11,6 +12,7 @@ const INADDR_ANY: [u8; 4] = [0, 0, 0, 0];
 
 const PORT: u16 = 8000;
 const BUFSIZE: usize = 4096;
+const MAXCLIENTS: usize = 20;
 
 const GET_PREFIX: &str = "GET<";
 const PUT_PREFIX: &str = "PUT<";
@@ -277,14 +279,36 @@ pub fn main() -> Result<(), Error> {
     let addr = SocketAddr::from((INADDR_ANY, PORT));
     let listener = TcpListener::bind(addr)?;
 
+    let num_of_threads = Arc::new((Mutex::new(0), Condvar::new()));
+
     loop {
         let (mut stream, _addr) = listener.accept()?;
 
-        thread::spawn(move || match recv_and_resp(&mut stream) {
-            Ok(_) => (),
-            Err(e) => {
-                eprintln!("{e}");
+        {
+            let (lock, cvar) = &*num_of_threads;
+            let mut count = lock.lock().unwrap();
+
+            while *count >= MAXCLIENTS {
+                count = cvar.wait(count).unwrap();
             }
+
+            *count += 1;
+        }
+
+        let num_of_threads = Arc::clone(&num_of_threads);
+
+        thread::spawn(move || {
+            match recv_and_resp(&mut stream) {
+                Ok(_) => (),
+                Err(e) => {
+                    eprintln!("{e}");
+                }
+            }
+
+            let (lock, cvar) = &*num_of_threads;
+            let mut count = lock.lock().unwrap();
+            *count -= 1;
+            cvar.notify_one();
         });
     }
 }

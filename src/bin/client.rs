@@ -152,6 +152,7 @@ fn main() -> Result<(), Error> {
 
         if received.starts_with(FILE_MSG.as_bytes()) {
             handle_sized_response(&mut stream, received, FILE_MSG, &mut response_bytes)?;
+            println!();
         } else if received.starts_with(LIST_MSG.as_bytes()) {
             handle_sized_response(&mut stream, received, LIST_MSG, &mut response_bytes)?;
         } else {
